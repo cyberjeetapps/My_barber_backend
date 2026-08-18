@@ -340,101 +340,113 @@ app.get("/api/owners/test-admin", async (req, res) => {
   }
 });
 
-// 🔥 EXISTING RAZORPAY ROUTES (keep your existing ones)
+// 🔥 EXISTING CASHFREE ROUTES (replaced Razorpay)
 
-// Create Razorpay order with UPI support
+const { Cashfree } = require("cashfree-pg");
+Cashfree.XClientId = process.env.CASHFREE_APP_ID || "TEST430329ae80e0f32e41a393d78b923034";
+Cashfree.XClientSecret = process.env.CASHFREE_SECRET_KEY || "TESTaf195616268bd6202eeb3bf8dc458956e7192a85";
+Cashfree.XEnvironment = Cashfree.Environment.SANDBOX; // Change to PRODUCTION for live
+
+// Create Cashfree order
 app.post("/create-order", async (req, res) => {
   const { amount, currency = "INR", receipt = "receipt_001", notes = {} } = req.body;
 
   try {
-    const order = await razorpay.orders.create({
-      amount: Math.round(amount * 100), // convert to paise, round for safety
-      currency,
-      receipt,
-      payment_capture: 1, // auto-capture after payment
-      notes: {
+    const orderId = receipt + "_" + Date.now(); // cashfree requires unique order_id
+    const request = {
+      order_amount: amount,
+      order_currency: currency,
+      order_id: orderId,
+      customer_details: {
+        customer_id: notes.customer_id || "guest",
+        customer_phone: notes.phone || "9999999999",
+      },
+      order_meta: {
+        return_url: "https://mybarber.co.in/return?order_id={order_id}"
+      },
+      order_tags: {
         ...notes,
-        created_at: new Date().toISOString(),
         platform: "react-native-expo"
       }
-    });
+    };
 
-    res.json({
-      success: true,
-      orderId: order.id,
-      currency: order.currency,
-      amount: order.amount / 100, // send back in rupees for frontend clarity
-      key: razorpay.key_id,
-      createdAt: order.created_at
+    Cashfree.PGCreateOrder("2023-08-01", request).then((response) => {
+      let order = response.data;
+      res.json({
+        success: true,
+        orderId: order.order_id,
+        paymentSessionId: order.payment_session_id,
+        currency: order.order_currency,
+        amount: order.order_amount,
+        createdAt: new Date().toISOString()
+      });
+    }).catch((error) => {
+      console.error("Order creation failed:", error.response?.data || error.message);
+      res.status(500).json({
+        success: false,
+        message: "Order creation failed",
+        error: error.response?.data?.message || error.message
+      });
     });
   } catch (error) {
-    console.error("Order creation failed:", error);
+    console.error("Order creation setup failed:", error);
     res.status(500).json({
       success: false,
-      message: "Order creation failed",
-      error: error.error ? error.error.description : error.message
+      message: "Order creation setup failed",
+      error: error.message
     });
   }
 });
 
 // Enhanced payment verification with UPI support
 app.post("/verify-payment", async (req, res) => {
-  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+  const { order_id } = req.body;
 
   try {
-    // Validate required fields
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    if (!order_id) {
       return res.status(400).json({ 
         success: false, 
-        message: "Missing required payment parameters" 
+        message: "Missing required payment parameters (order_id)" 
       });
     }
 
-    // Generate signature for verification
-    const generated_signature = crypto
-      .createHmac("sha256", razorpay.key_secret)
-      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-      .digest("hex");
-
-    if (generated_signature === razorpay_signature) {
-      // Fetch payment details for additional verification (especially for UPI)
-      try {
-        const payment = await razorpay.payments.fetch(razorpay_payment_id);
-        
-        // Check payment status
-        if (payment.status === 'captured' || payment.status === 'authorized') {
-          return res.json({ 
-            success: true,
-            paymentId: razorpay_payment_id,
-            orderId: razorpay_order_id,
-            paymentStatus: payment.status,
-            paymentMethod: payment.method,
-            amount: payment.amount / 100 // Convert back to rupees
-          });
-        } else {
-          return res.status(400).json({ 
-            success: false, 
-            message: `Payment status: ${payment.status}`,
-            paymentStatus: payment.status
-          });
-        }
-      } catch (fetchError) {
-        // If we can't fetch payment details, still trust the signature verification
-        console.warn('Could not fetch payment details, but signature is valid:', fetchError);
-        return res.json({ 
-          success: true,
-          paymentId: razorpay_payment_id,
-          orderId: razorpay_order_id,
-          paymentStatus: 'verified_by_signature'
+    Cashfree.PGOrderFetchPayments("2023-08-01", order_id).then((response) => {
+      const payments = response.data;
+      if (!payments || payments.length === 0) {
+        return res.status(400).json({ 
+          success: false, 
+          message: "No payments found for this order"
         });
       }
-    } else {
-      return res.status(400).json({ 
+
+      // Check for any successful payment
+      const successfulPayment = payments.find(p => p.payment_status === "SUCCESS");
+
+      if (successfulPayment) {
+        return res.json({ 
+          success: true,
+          paymentId: successfulPayment.cf_payment_id,
+          orderId: order_id,
+          paymentStatus: "captured", // matching previous response format
+          paymentMethod: successfulPayment.payment_group,
+          amount: successfulPayment.payment_amount
+        });
+      } else {
+        const lastPayment = payments[payments.length - 1];
+        return res.status(400).json({ 
+          success: false, 
+          message: `Payment status: ${lastPayment.payment_status}`,
+          paymentStatus: lastPayment.payment_status
+        });
+      }
+    }).catch((error) => {
+      console.error("Payment verification fetch error:", error.response?.data || error.message);
+      res.status(500).json({ 
         success: false, 
-        message: "Invalid signature",
-        details: "Signature verification failed"
+        message: "Payment verification failed",
+        error: error.response?.data?.message || error.message 
       });
-    }
+    });
   } catch (error) {
     console.error("Payment verification error:", error);
     res.status(500).json({ 
@@ -445,112 +457,10 @@ app.post("/verify-payment", async (req, res) => {
   }
 });
 
-// Get payment status endpoint
-app.get("/payment-status/:paymentId", async (req, res) => {
-  try {
-    const payment = await razorpay.payments.fetch(req.params.paymentId);
-    res.json({
-      paymentId: payment.id,
-      status: payment.status,
-      method: payment.method,
-      amount: payment.amount / 100,
-      currency: payment.currency,
-      createdAt: payment.created_at,
-      captured: payment.captured
-    });
-  } catch (error) {
-    console.error("Payment status fetch error:", error);
-    res.status(500).json({ 
-      message: "Failed to fetch payment status",
-      error: error.error ? error.error.description : error.message 
-    });
-  }
-});
-
-// Webhook endpoint — the reconciliation source of truth. /verify-payment
-// above depends on the customer's app staying open and online long enough
-// to call it; this doesn't. Register this URL + RAZORPAY_WEBHOOK_SECRET
-// in the Razorpay dashboard (Settings > Webhooks) for at least
-// payment.captured and payment.failed.
+// Webhook endpoint for Cashfree (Placeholder)
 app.post("/webhook", express.raw({ type: 'application/json' }), async (req, res) => {
-  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
-  const signature = req.headers['x-razorpay-signature'];
-  const body = req.body; // raw buffer
-
-  if (!webhookSecret) {
-    console.error('RAZORPAY_WEBHOOK_SECRET is not configured — rejecting webhook');
-    return res.status(500).json({ status: "webhook not configured" });
-  }
-
-  const expectedSignature = crypto
-    .createHmac('sha256', webhookSecret)
-    .update(body)
-    .digest('hex');
-
-  if (signature !== expectedSignature) {
-    return res.status(400).json({ status: "invalid signature" });
-  }
-
-  // Acknowledge immediately — Razorpay retries on slow/failed responses,
-  // and the reconciliation below shouldn't hold up that ack.
+  console.log("Cashfree Webhook received");
   res.json({ status: "success" });
-
-  try {
-    const event = JSON.parse(body.toString());
-    const payment = event?.payload?.payment?.entity;
-    if (!payment) return;
-
-    // Durable audit log for every event, independent of whether it maps to
-    // a known booking below — this is what makes reconciliation actually
-    // possible later, even for events this handler doesn't fully resolve.
-    await db.collection('webhookEvents').add({
-      event: event.event,
-      paymentId: payment.id,
-      orderId: payment.order_id,
-      status: payment.status,
-      amount: typeof payment.amount === 'number' ? payment.amount / 100 : null,
-      receivedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    if (event.event !== 'payment.captured' && event.event !== 'payment.failed') {
-      return;
-    }
-
-    const order = await razorpay.orders.fetch(payment.order_id);
-    const notes = order.notes || {};
-    const paymentStatus = event.event === 'payment.captured' ? 'paid' : 'failed';
-
-    let ref = null;
-    if (notes.appointment_id) {
-      ref = db.collection('appointments').doc(notes.appointment_id);
-    } else if (notes.booking_id) {
-      ref = db.collection('familybookings').doc(notes.booking_id);
-    }
-    // Package purchases: `notes.package_id` is the catalog package's ID,
-    // not the purchase record's document ID (that's auto-generated when
-    // the purchase doc is created client-side), so there's no reliable way
-    // to look up the specific purchase from the webhook payload alone.
-    // The webhookEvents log above still captures the payment for manual
-    // reconciliation — closing this fully needs the client to also write
-    // its Razorpay order ID onto the package_purchases doc at creation.
-
-    if (!ref) {
-      console.warn('Webhook: could not map payment to a booking to update directly:', payment.id, notes);
-      return;
-    }
-
-    await ref.set({
-      paymentStatus,
-      razorpayPaymentId: payment.id,
-      razorpayOrderId: payment.order_id,
-      paymentReconciledViaWebhook: true,
-      paymentReconciledAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-  } catch (err) {
-    // Response was already sent — this only affects whether we managed to
-    // reconcile Firestore, not whether Razorpay considers the webhook delivered.
-    console.error('Webhook reconciliation failed:', err);
-  }
 });
 
 // Health check endpoint
@@ -583,6 +493,6 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
   console.log(`📱 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔥 Firebase Project: groomy-22576`);
-  console.log(`💳 Razorpay: Live mode`);
+  console.log(`💳 Cashfree: Live mode`);
   console.log(`👨‍💼 Owner Management: Enabled`);
 });
