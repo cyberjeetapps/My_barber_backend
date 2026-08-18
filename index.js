@@ -335,10 +335,10 @@ app.get("/api/owners/test-admin", async (req, res) => {
 
 // 🔥 EXISTING CASHFREE ROUTES (replaced Razorpay)
 
-const { Cashfree } = require("cashfree-pg");
+const { Cashfree, CFEnvironment } = require("cashfree-pg");
 Cashfree.XClientId = process.env.CASHFREE_APP_ID || "TEST430329ae80e0f32e41a393d78b923034";
 Cashfree.XClientSecret = process.env.CASHFREE_SECRET_KEY || "TESTaf195616268bd6202eeb3bf8dc458956e7192a85";
-Cashfree.XEnvironment = Cashfree.Environment.SANDBOX; // Change to PRODUCTION for live
+Cashfree.XEnvironment = process.env.NODE_ENV === 'production' ? CFEnvironment.PRODUCTION : CFEnvironment.SANDBOX;
 
 // Create Cashfree order
 app.post("/create-order", async (req, res) => {
