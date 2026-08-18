@@ -1,7 +1,5 @@
 const express = require("express");
-const Razorpay = require("razorpay");
 const cors = require("cors");
-const crypto = require("crypto");
 const admin = require("firebase-admin");
 require("dotenv").config();
 
@@ -20,12 +18,6 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 const auth = admin.auth();
-
-const { RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET } = process.env;
-if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
-  throw new Error('RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET must be configured');
-}
-const razorpay = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET });
 // 🔥 OWNER MANAGEMENT ROUTES
 
 // Create owner with Firebase Auth account (admin only)
