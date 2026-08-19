@@ -340,6 +340,8 @@ Cashfree.XClientId = process.env.CASHFREE_APP_ID || "TEST430329ae80e0f32e41a393d
 Cashfree.XClientSecret = process.env.CASHFREE_SECRET_KEY || "TESTaf195616268bd6202eeb3bf8dc458956e7192a85";
 Cashfree.XEnvironment = process.env.NODE_ENV === 'production' ? CFEnvironment.PRODUCTION : CFEnvironment.SANDBOX;
 
+const cashfreeInstance = new Cashfree();
+
 // Create Cashfree order
 app.post("/create-order", async (req, res) => {
   const { amount, currency = "INR", receipt = "receipt_001", notes = {} } = req.body;
@@ -363,7 +365,7 @@ app.post("/create-order", async (req, res) => {
       }
     };
 
-    Cashfree.PGCreateOrder("2023-08-01", request).then((response) => {
+    cashfreeInstance.PGCreateOrder(request).then((response) => {
       let order = response.data;
       res.json({
         success: true,
@@ -401,9 +403,9 @@ app.post("/verify-payment", async (req, res) => {
         success: false, 
         message: "Missing required payment parameters (order_id)" 
       });
-    }
+      }
 
-    Cashfree.PGOrderFetchPayments("2023-08-01", order_id).then((response) => {
+    cashfreeInstance.PGOrderFetchPayments(order_id).then((response) => {
       const payments = response.data;
       if (!payments || payments.length === 0) {
         return res.status(400).json({ 
@@ -461,7 +463,7 @@ app.get("/health", (req, res) => {
   res.json({ 
     status: "OK", 
     timestamp: new Date().toISOString(),
-    service: "razorpay-backend",
+    service: "backend",
     firebase: "connected",
     features: ["payments", "owner-management"]
   });
